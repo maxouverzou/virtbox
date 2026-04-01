@@ -362,6 +362,7 @@ def cmd_create(args):
     if not args.no_share_nix:
         args.share_ro = ["/nix:/nix"] + args.share_ro
     args.try_share = [
+        str(Path.home() / ".claude.json"),
         str(Path.home() / ".claude"),
         str(Path.home() / ".config/opencode"),
         str(Path.home() / ".gemini"),
