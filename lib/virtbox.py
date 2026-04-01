@@ -519,6 +519,20 @@ def _is_managed(domain) -> bool:
     return root.find(f".//{{{VIRTBOX_NS}}}managed") is not None
 
 
+def _find_vms_by_cwd(conn, cwd: str) -> list[str]:
+    """Return names of all managed VMs whose guest cwd matches the given host path."""
+    guest_cwd = _normalize_guest_path(cwd)
+    matches = []
+    for domain in conn.listAllDomains():
+        if not _is_managed(domain):
+            continue
+        root = ET.fromstring(domain.XMLDesc())
+        managed_el = root.find(f".//{{{VIRTBOX_NS}}}managed")
+        if managed_el is not None and managed_el.get("cwd") == guest_cwd:
+            matches.append(domain.name())
+    return matches
+
+
 def _get_base_of(domain) -> str | None:
     root = ET.fromstring(domain.XMLDesc())
     el = root.find(f".//{{{VIRTBOX_NS}}}managed")
@@ -571,8 +585,46 @@ def cmd_list(args):
 
 
 def cmd_enter(args):
-    vmname = args.vm_name
     username = args.ssh_user or os.environ.get("USER") or getpass.getuser()
+    cwd = os.getcwd()
+
+    if args.vm_name:
+        vmname = args.vm_name
+    else:
+        conn = open_conn()
+        try:
+            matches = _find_vms_by_cwd(conn, cwd)
+        finally:
+            conn.close()
+
+        if len(matches) > 1:
+            names = ", ".join(sorted(matches))
+            sys.exit(f"Error: multiple VMs found for this directory ({names}); specify a VM name")
+        elif len(matches) == 1:
+            vmname = matches[0]
+        else:
+            image = os.environ.get("VIRTBOX_BASE_IMAGE")
+            if not image:
+                sys.exit(
+                    "Error: no VM found for this directory and VIRTBOX_BASE_IMAGE is not set; "
+                    "run 'virtbox create --image <path>' to create one"
+                )
+            print("No VM found for this directory, creating one...")
+            create_args = argparse.Namespace(
+                vm_name=None,
+                image=image,
+                share=[],
+                share_ro=[],
+                try_share=[],
+                try_share_ro=[],
+                share_parent=False,
+                no_share_nix=False,
+                cpus=2,
+                memory=2048,
+                disk_size=20,
+            )
+            cmd_create(create_args)
+            vmname = f"virtbox-{os.path.basename(cwd)}"
 
     conn = open_conn()
     try:
@@ -586,15 +638,17 @@ def cmd_enter(args):
 
         state, _ = domain.state()
         if state != libvirt.VIR_DOMAIN_RUNNING:
-            sys.exit(f"Error: VM '{vmname}' is not running")
+            print(f"Starting VM '{vmname}'...")
+            domain.create()
+            cid = _wait_for_ssh(domain, username)
+        else:
+            root = ET.fromstring(domain.XMLDesc())
+            cid_el = root.find(".//vsock/cid")
+            cid = cid_el.get("address") if cid_el is not None else None
+            if not cid:
+                sys.exit(f"Error: could not determine vsock CID for VM '{vmname}'")
 
         root = ET.fromstring(domain.XMLDesc())
-        cid_el = root.find(".//vsock/cid")
-        cid = cid_el.get("address") if cid_el is not None else None
-
-        if not cid:
-            sys.exit(f"Error: could not determine vsock CID for VM '{vmname}'")
-
         managed_el = root.find(f".//{{{VIRTBOX_NS}}}managed")
         guest_cwd = managed_el.get("cwd") if managed_el is not None else None
     finally:
@@ -779,7 +833,8 @@ def main():
     p_create.set_defaults(func=cmd_create)
 
     p_connect = sub.add_parser("enter", help="Enter a running VM with an interactive SSH session")
-    p_connect.add_argument("vm_name", help="Name of the VM")
+    p_connect.add_argument("vm_name", nargs="?", default=None,
+                           help="Name of the VM (default: look up by current directory)")
     p_connect.add_argument("--ssh-user", default=None, dest="ssh_user",
                            help="SSH user (default: current user)")
     p_connect.set_defaults(func=cmd_enter)
