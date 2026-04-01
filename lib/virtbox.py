@@ -357,6 +357,9 @@ def cmd_create(args):
     cwd = os.getcwd()
     vmname = args.vm_name or f"virtbox-{os.path.basename(cwd)}"
 
+    if not _confirm(f"Create VM '{vmname}'?", args.yes):
+        sys.exit("Aborted.")
+
     # Inject default shares before parsing
     args.share = [cwd] + args.share
     if not args.no_share_nix:
@@ -613,6 +616,7 @@ def cmd_enter(args):
             create_args = argparse.Namespace(
                 vm_name=None,
                 image=image,
+                yes=args.yes,
                 share=[],
                 share_ro=[],
                 try_share=[],
@@ -830,6 +834,8 @@ def main():
     p_create.add_argument("--disk-size", type=int, default=20, metavar="GiB",
                           dest="disk_size",
                           help="Overlay disk size in GiB (default: 20). Must be >= base image size.")
+    p_create.add_argument("-y", "--assumeyes", dest="yes", action="store_true",
+                          help="Skip confirmation prompt")
     p_create.set_defaults(func=cmd_create)
 
     p_connect = sub.add_parser("enter", help="Enter a running VM with an interactive SSH session")
@@ -837,6 +843,8 @@ def main():
                            help="Name of the VM (default: look up by current directory)")
     p_connect.add_argument("--ssh-user", default=None, dest="ssh_user",
                            help="SSH user (default: current user)")
+    p_connect.add_argument("-y", "--assumeyes", dest="yes", action="store_true",
+                           help="Skip confirmation prompt when creating a new VM")
     p_connect.set_defaults(func=cmd_enter)
 
     p_list = sub.add_parser("list", help="List virtbox managed VMs or base images")
