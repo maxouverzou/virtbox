@@ -149,5 +149,6 @@ in
 
     pkgs.git
     pkgs.socat
+    pkgs.cloud-init
   ];
 }

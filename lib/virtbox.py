@@ -4,6 +4,7 @@ import argparse
 import getpass
 import grp
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -111,7 +112,7 @@ def _ensure_base_in_pool(conn: libvirt.virConnect, pool, image: str) -> tuple[st
     return vol_name, vol.path()
 
 
-def create_seed_iso_volume(conn: libvirt.virConnect, pool, vmname: str):
+def create_seed_iso_volume(conn: libvirt.virConnect, pool, vmname: str, shares=None):
     """Generate a cloud-init seed ISO and upload it to the storage pool."""
     username = os.environ.get("USER") or getpass.getuser()
     uid = os.getuid()
@@ -123,32 +124,42 @@ def create_seed_iso_volume(conn: libvirt.virConnect, pool, vmname: str):
         groupname = str(gid)
     ssh_key = find_ssh_pubkey()
 
-    if ssh_key:
-        ssh_keys_section = f"    ssh_authorized_keys:\n      - {ssh_key}\n"
-    else:
+    if not ssh_key:
         print("Warning: no SSH public key found in ~/.ssh; guest may be inaccessible via SSH")
-        ssh_keys_section = ""
 
-    user_data = (
-        f"#cloud-config\n"
-        f"hostname: {vmname}\n"
-        f"fqdn: {vmname}.local\n"
-        f"manage_etc_hosts: true\n"
-        f"groups:\n"
-        f"  {groupname}:\n"
-        f"    gid: {gid}\n"
-        f"users:\n"
-        f"  - name: {username}\n"
-        f"    uid: {uid}\n"
-        f"    home: {home}\n"
-        f"    primary_group: {groupname}\n"
-        f"    groups: wheel\n"
-        f"    sudo: ALL=(ALL) NOPASSWD:ALL\n"
-        f"{ssh_keys_section}"
-        f"runcmd:\n"
-        f"  - loginctl enable-linger {username}\n"
-        f"  - systemctl start user@{uid}.service\n"
-    )
+    config = {
+        "hostname": vmname,
+        "fqdn": f"{vmname}.local",
+        "groups": [groupname],
+        "users": [{
+            "name": username,
+            "uid": uid,
+            "homedir": home,
+            "primary_group": groupname,
+            "groups": "wheel",
+            "sudo": "ALL=(ALL) NOPASSWD:ALL",
+            **({"ssh_authorized_keys": [ssh_key]} if ssh_key else {}),
+        }],
+        "runcmd": [
+            f"loginctl enable-linger {username}",
+            f"systemctl start user@{uid}.service",
+        ],
+    }
+
+    if shares:
+        mount_lines = []
+        for hostdir, guestmount, readonly in shares:
+            tag = "share-" + hashlib.sha256(hostdir.encode()).hexdigest()[:8]
+            ro_flag = " -o ro" if readonly else ""
+            mount_lines.append(f"mkdir -p '{guestmount}'")
+            mount_lines.append(f"mount -t virtiofs{ro_flag} {tag} '{guestmount}'")
+        config["write_files"] = [{
+            "path": "/var/lib/cloud/scripts/per-boot/virtbox-mounts.sh",
+            "permissions": "0755",
+            "content": "#!/bin/sh\n" + "\n".join(mount_lines) + "\n",
+        }]
+
+    user_data = "#cloud-config\n" + json.dumps(config, indent=2) + "\n"
     meta_data = f"instance-id: {vmname}\nlocal-hostname: {vmname}\n"
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -201,6 +212,7 @@ You may also need:
 """)
 
 
+
 def _make_virtiofs_xml(hostdir, tag, readonly=False):
     ro = "<readonly/>" if readonly else ""
     return (
@@ -250,17 +262,7 @@ def _wait_for_ssh(domain, username, timeout=120):
         sys.exit("Error: timed out waiting for SSH")
 
     print("Waiting for cloud-init to finish...")
-    while time.time() < deadline:
-        result = subprocess.run(
-            ssh_base + ["systemctl is-active cloud-final.service"],
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout.strip() not in ("active", "activating"):
-            break
-        time.sleep(3)
-    else:
-        print("Warning: timed out waiting for cloud-init to finish")
+    subprocess.run(ssh_base + ["cloud-init status --long --wait"], capture_output=True)
 
     return cid
 
@@ -297,23 +299,6 @@ def _ensure_nix_vsock_proxy():
         print(f"Nix daemon vsock proxy active on port {NIX_VSOCK_PORT}")
 
 
-def _mount_share(cid, username, tag, guestmount):
-    result = subprocess.run([
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=10",
-        "-o", "BatchMode=yes",
-        "-T",
-        f"{username}@vsock%{cid}",
-        f"mkdir -p '{guestmount}' && sudo mount -t virtiofs '{tag}' '{guestmount}'",
-    ])
-    if result.returncode != 0:
-        print("Could not mount automatically. Run in the guest:")
-        print(f"  mkdir -p {guestmount} && sudo mount -t virtiofs {tag} {guestmount}")
-        print("Tip: use HOST:GUEST syntax (e.g. --share /var/home/user/dir:/home/user/dir) to set a custom guest path.")
-    return result.returncode == 0
-
 
 def _normalize_guest_path(hostdir: str) -> str:
     """Return the guest mount point for a host path.
@@ -342,6 +327,8 @@ def _parse_shares(args):
             hostdir = str(Path(hostdir_raw).resolve())
             if not os.path.isdir(hostdir):
                 if try_mode:
+                    if os.path.exists(hostdir):
+                        print(f"Warning: skipping share '{hostdir}': not a directory")
                     continue
                 sys.exit(f"Error: '{hostdir}' is not a directory or does not exist")
             if guestmount is None:
@@ -437,7 +424,7 @@ def cmd_create(args):
         print(f"Created overlay at {overlay} backed by {base_vol_name} (size: {requested // 1024**3} GiB, sparse)")
 
         # Create and upload cloud-init seed ISO
-        seed_vol = create_seed_iso_volume(conn, pool, vmname)
+        seed_vol = create_seed_iso_volume(conn, pool, vmname, shares)
         seed_iso = seed_vol.path()
 
         fs_devices = ""
@@ -500,11 +487,6 @@ def cmd_create(args):
         print(f"VM '{vmname}' defined and started")
 
         if shares:
-            username = os.environ.get("USER") or getpass.getuser()
-            cid = _wait_for_ssh(domain, username)
-            for hostdir, guestmount, _readonly in shares:
-                tag = "share-" + hashlib.sha256(hostdir.encode()).hexdigest()[:8]
-                _mount_share(cid, username, tag, guestmount)
             if not args.no_share_nix:
                 _ensure_nix_vsock_proxy()
             if _selinux_enforcing():
@@ -626,6 +608,11 @@ def cmd_enter(args):
             )
             cmd_create(create_args)
             vmname = f"virtbox-{os.path.basename(cwd)}"
+            conn2 = open_conn()
+            try:
+                _wait_for_ssh(conn2.lookupByName(vmname), username)
+            finally:
+                conn2.close()
 
     conn = open_conn()
     try:
