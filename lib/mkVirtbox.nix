@@ -1,17 +1,34 @@
 { pkgs, baseImage ? null }:
+
 let
-  python = pkgs.python3.withPackages (ps: [ ps.libvirt ]);
-  baseImageEnv = pkgs.lib.optionalString (baseImage != null)
-    "export VIRTBOX_BASE_IMAGE=${baseImage}";
+  version = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
 in
-pkgs.writeShellApplication {
-  name = "virtbox";
-  runtimeInputs = [
-    python
-    pkgs.xorriso
+pkgs.python3Packages.buildPythonApplication {
+  pname = "virtbox";
+  inherit version;
+
+  src = ./.;
+
+  pyproject = true;
+
+  build-system = [
+    pkgs.python3Packages.setuptools
   ];
-  text = ''
-    ${baseImageEnv}
-    exec python3 ${./virtbox.py} "$@"
+
+  propagatedBuildInputs = [
+    pkgs.python3Packages.libvirt
+  ];
+
+  nativeBuildInputs = [
+    pkgs.makeWrapper
+  ];
+
+  postInstall = ''
+    wrapProgram $out/bin/virtbox \
+      --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.xorriso ]} \
+      ${pkgs.lib.optionalString (baseImage != null)
+          "--set VIRTBOX_BASE_IMAGE \"${baseImage}\""}
   '';
+
+  doCheck = false;
 }
