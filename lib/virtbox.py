@@ -115,6 +115,7 @@ def create_seed_iso_volume(conn: libvirt.virConnect, pool, vmname: str):
     username = os.environ.get("USER") or getpass.getuser()
     uid = os.getuid()
     gid = os.getgid()
+    home = str(Path.home().resolve())
     try:
         groupname = grp.getgrgid(gid).gr_name
     except KeyError:
@@ -138,6 +139,7 @@ def create_seed_iso_volume(conn: libvirt.virConnect, pool, vmname: str):
         f"users:\n"
         f"  - name: {username}\n"
         f"    uid: {uid}\n"
+        f"    home: {home}\n"
         f"    primary_group: {groupname}\n"
         f"    groups: wheel\n"
         f"    sudo: ALL=(ALL) NOPASSWD:ALL\n"
@@ -313,18 +315,12 @@ def _mount_share(cid, username, tag, guestmount):
 
 
 def _normalize_guest_path(hostdir: str) -> str:
-    """Map a resolved host path to a sensible guest mount point.
+    """Return the guest mount point for a host path.
 
-    On ostree-based systems (e.g. Fedora Silverblue), $HOME resolves to
-    /var/home/<user> rather than the conventional /home/<user>.  The guest
-    is a standard Linux system that has no /var/home, so we substitute the
-    canonical /home/<user> prefix when the resolved home directory differs
-    from it.
+    The guest $HOME is set to match the host $HOME exactly (including on
+    ostree-based systems where it may be /var/home/<user>), so no path
+    translation is needed.
     """
-    home_resolved = str(Path.home().resolve())
-    home_standard = f"/home/{getpass.getuser()}"
-    if home_resolved != home_standard and hostdir.startswith(home_resolved):
-        return home_standard + hostdir[len(home_resolved):]
     return hostdir
 
 
