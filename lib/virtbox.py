@@ -3,6 +3,7 @@
 import argparse
 import getpass
 import grp
+import hashlib
 import os
 import shutil
 import subprocess
@@ -441,7 +442,7 @@ def cmd_create(args):
 
         fs_devices = ""
         for hostdir, _guestmount, readonly in shares:
-            tag = f"share-{os.path.basename(hostdir)}"[:31]
+            tag = "share-" + hashlib.sha256(hostdir.encode()).hexdigest()[:8]
             fs_devices += "\n    " + _make_virtiofs_xml(hostdir, tag, readonly)
 
         guest_cwd = shares[0][1] if shares else None
@@ -502,7 +503,7 @@ def cmd_create(args):
             username = os.environ.get("USER") or getpass.getuser()
             cid = _wait_for_ssh(domain, username)
             for hostdir, guestmount, _readonly in shares:
-                tag = f"share-{os.path.basename(hostdir)}"[:31]
+                tag = "share-" + hashlib.sha256(hostdir.encode()).hexdigest()[:8]
                 _mount_share(cid, username, tag, guestmount)
             if not args.no_share_nix:
                 _ensure_nix_vsock_proxy()
