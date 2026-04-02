@@ -184,33 +184,6 @@ def create_seed_iso_volume(conn: libvirt.virConnect, pool, vmname: str, shares=N
     return vol
 
 
-def _selinux_enforcing() -> bool:
-    getenforce = shutil.which("getenforce")
-    if not getenforce:
-        return False
-    result = subprocess.run([getenforce], capture_output=True, text=True)
-    return result.stdout.strip() == "Enforcing"
-
-
-def _print_selinux_warning(hostdirs: list[str]):
-    chcon_lines = "\n".join(f'  chcon -R -t svirt_image_t "{d}"' for d in hostdirs)
-    fix_lines = "\n".join(
-        f'  semanage fcontext -a -t svirt_image_t "{d}(/.*)?"\n  restorecon -Rv "{d}"'
-        for d in hostdirs
-    )
-    print(f"""
-WARNING: SELinux is Enforcing. QEMU/virtiofsd may be denied access to shared directories.
-
-Quick fix (temporary, resets on relabel):
-{chcon_lines}
-
-Permanent fix:
-{fix_lines}
-
-You may also need:
-  setsebool -P virt_use_fusefs on
-""")
-
 
 
 def _make_virtiofs_xml(hostdir, tag, readonly=False):
@@ -489,8 +462,6 @@ def cmd_create(args):
         if shares:
             if not args.no_share_nix:
                 _ensure_nix_vsock_proxy()
-            if _selinux_enforcing():
-                _print_selinux_warning([h for h, _, _ in shares])
     finally:
         conn.close()
 
