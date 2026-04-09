@@ -1,6 +1,6 @@
 # virtbox
 
-A libvirt VM manager with virtiofs directory sharing and cloud-init provisioning. Includes a Nix flake for building NixOS-based QEMU disk images.
+A libvirt VM manager with virtiofs directory sharing and cloud-init provisioning. Ships a NixOS-based QEMU base image (git, Podman, Nix proxy) that consumers can extend with additional packages.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ A libvirt VM manager with virtiofs directory sharing and cloud-init provisioning
 
 ## Build
 
-Build `virtbox` (includes the base image — Claude Code, Gemini CLI, opencode, vibe-kanban, Podman):
+Build `virtbox` with the base image (git, Podman, cloud-init):
 
 ```sh
 nix build .#virtbox
@@ -29,6 +29,59 @@ Format the Nix sources:
 ```sh
 nix fmt
 ```
+
+## Customizing the image
+
+Use `withPackages` to bake additional packages into the base image and optionally set default `create` arguments. This is designed for consuming virtbox from another flake (e.g. via home-manager).
+
+### Adding packages
+
+```nix
+# flake.nix (consumer)
+{
+  inputs = {
+    virtbox.url = "github:maxouverzou/virtbox";
+    llm-agents.url = "github:numtide/llm-agents.nix";
+  };
+
+  # ...
+}
+```
+
+```nix
+# home.nix
+home.packages = let
+  virtbox = inputs.virtbox.packages.${pkgs.system}.virtbox;
+  llm-agents = inputs.llm-agents.packages.${pkgs.system};
+in [
+  (virtbox.withPackages [ llm-agents.claude-code ])
+];
+```
+
+### Adding packages with extra create defaults
+
+If the packages you add need host directories shared into the guest, pass an attrset with `createArgs`:
+
+```nix
+home.packages = let
+  virtbox = inputs.virtbox.packages.${pkgs.system}.virtbox;
+  llm-agents = inputs.llm-agents.packages.${pkgs.system};
+in [
+  (virtbox.withPackages {
+    packages = [
+      llm-agents.claude-code
+      llm-agents.vibe-kanban
+    ];
+    createArgs = [
+      "--try-share" "$HOME/.claude"
+      "--try-share" "$HOME/.claude.json"
+      "--try-share" "$HOME/.vibe-kanban"
+    ];
+  })
+];
+```
+
+The `createArgs` are injected as defaults whenever `virtbox create` is run. Users can still pass additional flags on the command line as usual.
 
 ## Usage
 
@@ -83,6 +136,8 @@ virtbox rmi --all
 | `--share-parent` | — | Share parent of current directory read-only |
 
 The `VIRTBOX_BASE_IMAGE` environment variable can substitute for `--image`.
+
+When virtbox is built with `withPackages { createArgs = [...]; }`, those args are injected as defaults via the `VIRTBOX_EXTRA_CREATE_ARGS` environment variable. Command-line flags take precedence.
 
 
 ## SELinux

@@ -321,13 +321,7 @@ def cmd_create(args):
     args.share = [cwd] + args.share
     if not args.no_share_nix:
         args.share_ro = ["/nix:/nix"] + args.share_ro
-    args.try_share = [
-        str(Path.home() / ".claude.json"),
-        str(Path.home() / ".claude"),
-        str(Path.home() / ".config/opencode"),
-        str(Path.home() / ".gemini"),
-        str(Path.home() / ".vibe-kanban"),
-    ] + args.try_share
+    args.try_share = list(args.try_share)
     args.try_share_ro = [
         str(Path.home() / ".git"),
         str(Path.home() / ".config/git"),
@@ -825,7 +819,15 @@ def main():
                       help="Do not prompt for confirmation")
     p_rm.set_defaults(func=cmd_rm)
 
-    args = parser.parse_args()
+    # Inject extra default args for the create subcommand from env var.
+    # VIRTBOX_EXTRA_CREATE_ARGS is set by the Nix wrapper (via withPackages).
+    argv = sys.argv[1:]
+    extra_raw = os.environ.get("VIRTBOX_EXTRA_CREATE_ARGS", "")
+    if extra_raw and len(argv) >= 1 and argv[0] == "create":
+        import shlex
+        argv = [argv[0]] + shlex.split(extra_raw) + argv[1:]
+
+    args = parser.parse_args(argv)
     args.func(args)
 
 

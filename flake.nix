@@ -3,10 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    llm-agents = {
-      url = "github:numtide/llm-agents.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -17,7 +13,6 @@
     {
       self,
       nixpkgs,
-      llm-agents,
       treefmt-nix,
     }:
     let
@@ -33,19 +28,48 @@
         modules:
         nixpkgs.lib.nixosSystem {
           inherit system modules;
-          specialArgs = { inherit llm-agents; };
         };
+
+      mkImage = extraModules: (mkSystem ([ ./image.nix ] ++ extraModules)).config.system.build.images.qemu;
 
     in
     {
       nixosConfigurations.image = mkSystem [ ./image.nix ];
 
       packages.${system} = {
-        image = self.nixosConfigurations.image.config.system.build.images.qemu;
-        virtbox = import ./lib/mkVirtbox.nix {
-          inherit pkgs;
-          baseImage = self.packages.${system}.image;
-        };
+        image = mkImage [ ];
+        virtbox =
+          let
+            base = import ./lib/mkVirtbox.nix {
+              inherit pkgs;
+              baseImage = self.packages.${system}.image;
+            };
+          in
+          base.overrideAttrs (old: {
+            passthru = (old.passthru or { }) // {
+              withPackages =
+                args:
+                let
+                  argSet =
+                    if builtins.isList args then
+                      {
+                        packages = args;
+                        createArgs = [ ];
+                      }
+                    else
+                      {
+                        packages = args.packages or [ ];
+                        createArgs = args.createArgs or [ ];
+                      };
+                  customImage = mkImage [ { environment.systemPackages = argSet.packages; } ];
+                in
+                import ./lib/mkVirtbox.nix {
+                  inherit pkgs;
+                  baseImage = customImage;
+                  extraCreateArgs = argSet.createArgs;
+                };
+            };
+          });
       };
 
       formatter.${system} = treefmtEval.config.build.wrapper;

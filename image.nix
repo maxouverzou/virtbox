@@ -1,7 +1,4 @@
-{ pkgs, llm-agents, ... }:
-let
-  agents = llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
-in
+{ pkgs, ... }:
 {
   system.stateVersion = "25.11";
 
@@ -122,31 +119,10 @@ in
     };
   };
 
-  systemd.user.services.vibe-kanban = {
-    description = "vibe-kanban";
-    wantedBy = [ "default.target" ];
-    after = [ "network.target" ];
-    serviceConfig = {
-      ExecStart = "${agents.vibe-kanban}/bin/vibe-kanban";
-      WorkingDirectory = "%h";
-      Restart = "on-failure";
-      Environment = [
-        "PORT=8080"
-        "HOST=0.0.0.0"
-      ];
-    };
-  };
-
   programs.nix-index.enable = true;
   programs.starship.enable = true;
 
-  environment.systemPackages = with agents; [
-    vibe-kanban
-    claude-code
-    gemini-cli
-    opencode
-    openspec
-
+  environment.systemPackages = [
     pkgs.git
     pkgs.socat
     pkgs.cloud-init

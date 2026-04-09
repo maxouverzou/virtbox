@@ -1,4 +1,8 @@
-{ pkgs, baseImage ? null }:
+{
+  pkgs,
+  baseImage ? null,
+  extraCreateArgs ? [ ],
+}:
 
 let
   version = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
@@ -23,12 +27,18 @@ pkgs.python3Packages.buildPythonApplication {
     pkgs.makeWrapper
   ];
 
-  postInstall = ''
-    wrapProgram $out/bin/virtbox \
-      --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.xorriso ]} \
-      ${pkgs.lib.optionalString (baseImage != null)
-          "--set VIRTBOX_BASE_IMAGE \"${baseImage}\""}
-  '';
+  postInstall =
+    let
+      extraArgsStr = builtins.concatStringsSep " " extraCreateArgs;
+    in
+    ''
+      wrapProgram $out/bin/virtbox \
+        --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.xorriso ]} \
+        ${pkgs.lib.optionalString (baseImage != null)
+            "--set VIRTBOX_BASE_IMAGE \"${baseImage}\""} \
+        ${pkgs.lib.optionalString (extraCreateArgs != [ ])
+            "--set VIRTBOX_EXTRA_CREATE_ARGS \"${extraArgsStr}\""}
+    '';
 
   doCheck = false;
 }
