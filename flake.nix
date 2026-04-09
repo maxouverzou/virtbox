@@ -34,8 +34,6 @@
 
     in
     {
-      nixosConfigurations.image = mkSystem [ ./image.nix ];
-
       packages.${system} = {
         image = mkImage [ ];
         virtbox =
